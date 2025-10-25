@@ -1,72 +1,74 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 import os
+from dotenv import load_dotenv
 
-app = FastAPI()
+# Load environment variables
+load_dotenv()
 
+app = FastAPI(title="NeuroTrade Backend", version="2.0")
+
+# Allow frontend access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Allow all for testing (adjust for production)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "d3t6v41r01qqdgfugm40d3t6v41r01qqdgfugm4g")
-BASE_URL = "https://finnhub.io/api/v1"
+# Finnhub API Key
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
+
+# Finnhub base URLs
+FINNHUB_QUOTE_URL = "https://finnhub.io/api/v1/quote"
+FINNHUB_SYMBOLS_URL = "https://finnhub.io/api/v1/stock/symbol"
 
 @app.get("/")
-def home():
+def root():
     return {"message": "NeuroTrade Backend Online ✅"}
-
-# Detect asset type and return appropriate endpoint
-def detect_asset_type(symbol: str):
-    if "/" in symbol:
-        return "forex"
-    elif symbol.upper() in ["NG", "CL", "GC", "SI"]:
-        return "commodity"
-    elif symbol.upper().startswith("^"):
-        return "index"
-    elif symbol.upper() in ["BTCUSD", "ETHUSD"]:
-        return "crypto"
-    else:
-        return "stock"
 
 @app.get("/price/{symbol}")
 def get_price(symbol: str):
+    """Fetch live price for any stock, index, or commodity symbol."""
     try:
-        asset_type = detect_asset_type(symbol)
-        symbol = symbol.upper().strip()
+        # Support special cases
+        aliases = {
+            "OIL": "CL=F",  # Crude Oil
+            "BRENT": "BZ=F",  # Brent Oil
+            "NATGAS": "NG=F",  # Natural Gas
+            "GOLD": "GC=F",  # Gold
+        }
+        symbol = aliases.get(symbol.upper(), symbol.upper())
 
-        if asset_type == "stock":
-            url = f"{BASE_URL}/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
-        elif asset_type == "forex":
-            url = f"{BASE_URL}/quote?symbol=OANDA:{symbol}&token={FINNHUB_API_KEY}"
-        elif asset_type == "crypto":
-            url = f"{BASE_URL}/crypto/candle?symbol=BINANCE:{symbol}&resolution=1&count=1&token={FINNHUB_API_KEY}"
-        elif asset_type == "commodity":
-            url = f"{BASE_URL}/quote?symbol={symbol}=COM&token={FINNHUB_API_KEY}"
-        elif asset_type == "index":
-            url = f"{BASE_URL}/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
-        else:
-            return {"error": "Unknown asset type"}
+        url = f"{FINNHUB_QUOTE_URL}?symbol={symbol}&token={FINNHUB_API_KEY}"
+        response = requests.get(url)
+        data = response.json()
 
-        r = requests.get(url)
-        data = r.json()
+        if "c" not in data or data["c"] == 0:
+            raise HTTPException(status_code=404, detail="Symbol not found or inactive")
 
-        if "c" in data:
-            return {
-                "symbol": symbol,
-                "current": data["c"],
-                "high": data["h"],
-                "low": data["l"],
-                "open": data["o"],
-                "previous_close": data["pc"],
-                "type": asset_type,
-            }
-        else:
-            return {"error": "Invalid response", "details": data}
-
+        return {
+            "symbol": symbol,
+            "current": data["c"],
+            "high": data["h"],
+            "low": data["l"],
+            "open": data["o"],
+            "previous_close": data["pc"]
+        }
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/symbols/{exchange}")
+def list_symbols(exchange: str = "US"):
+    """Get all available symbols for an exchange (default: US)"""
+    try:
+        url = f"{FINNHUB_SYMBOLS_URL}?exchange={exchange}&token={FINNHUB_API_KEY}"
+        response = requests.get(url)
+        if response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail="Failed to fetch symbols")
+        return response.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
