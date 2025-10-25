@@ -1,15 +1,10 @@
-import os
-import requests
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
-
-# Load .env locally (has no effect on Render; Render uses env vars UI)
-load_dotenv()
+import requests
+import os
 
 app = FastAPI()
 
-# CORS: allow everything in dev; lock down later if you want
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,33 +13,60 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-API_KEY = os.getenv("FINNHUB_API_KEY")
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "d3t6v41r01qqdgfugm40d3t6v41r01qqdgfugm4g")
+BASE_URL = "https://finnhub.io/api/v1"
 
 @app.get("/")
-def root():
+def home():
     return {"message": "NeuroTrade Backend Online ✅"}
+
+# Detect asset type and return appropriate endpoint
+def detect_asset_type(symbol: str):
+    if "/" in symbol:
+        return "forex"
+    elif symbol.upper() in ["NG", "CL", "GC", "SI"]:
+        return "commodity"
+    elif symbol.upper().startswith("^"):
+        return "index"
+    elif symbol.upper() in ["BTCUSD", "ETHUSD"]:
+        return "crypto"
+    else:
+        return "stock"
 
 @app.get("/price/{symbol}")
 def get_price(symbol: str):
-    if not API_KEY:
-        return {"error": "FINNHUB_API_KEY missing on server"}
-
     try:
-        url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={API_KEY}"
-        r = requests.get(url, timeout=10)
+        asset_type = detect_asset_type(symbol)
+        symbol = symbol.upper().strip()
+
+        if asset_type == "stock":
+            url = f"{BASE_URL}/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
+        elif asset_type == "forex":
+            url = f"{BASE_URL}/quote?symbol=OANDA:{symbol}&token={FINNHUB_API_KEY}"
+        elif asset_type == "crypto":
+            url = f"{BASE_URL}/crypto/candle?symbol=BINANCE:{symbol}&resolution=1&count=1&token={FINNHUB_API_KEY}"
+        elif asset_type == "commodity":
+            url = f"{BASE_URL}/quote?symbol={symbol}=COM&token={FINNHUB_API_KEY}"
+        elif asset_type == "index":
+            url = f"{BASE_URL}/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
+        else:
+            return {"error": "Unknown asset type"}
+
+        r = requests.get(url)
         data = r.json()
 
-        # Basic validation
-        if "c" not in data or data.get("c") in (None, 0):
-            return {"error": "Invalid data from Finnhub (market closed or bad symbol).", "raw": data}
+        if "c" in data:
+            return {
+                "symbol": symbol,
+                "current": data["c"],
+                "high": data["h"],
+                "low": data["l"],
+                "open": data["o"],
+                "previous_close": data["pc"],
+                "type": asset_type,
+            }
+        else:
+            return {"error": "Invalid response", "details": data}
 
-        return {
-            "symbol": symbol.upper(),
-            "current": data.get("c"),
-            "high": data.get("h"),
-            "low": data.get("l"),
-            "open": data.get("o"),
-            "previous_close": data.get("pc"),
-        }
     except Exception as e:
-        return {"error": f"Failed to fetch: {str(e)}"}
+        return {"error": str(e)}
